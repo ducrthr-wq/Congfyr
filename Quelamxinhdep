@@ -1,0 +1,533 @@
+-- =============================================================
+-- ULTRA AFK DESTROY MODE + KEEP GROUND
+-- Xóa phía client:
+--   + Công trình / cây cối / khu vườn
+--   + NPC / mob
+--   + Nhân vật người chơi khác
+-- Giữ:
+--   + Nhân vật của bạn
+--   + Tool / item
+--   + Camera
+--   + UI
+--   + Terrain và mặt đất
+-- =============================================================
+
+local Players = game:GetService("Players")
+local Workspace = game:GetService("Workspace")
+local Lighting = game:GetService("Lighting")
+local RunService = game:GetService("RunService")
+local SoundService = game:GetService("SoundService")
+
+local LocalPlayer = Players.LocalPlayer
+
+-- =============================================================
+-- CẤU HÌNH
+-- =============================================================
+
+local FPS_CAP = 15
+
+local REMOVE_OTHER_PLAYERS = true
+local REMOVE_NPCS = true
+local REMOVE_WORLD = true
+
+local MAX_OBJECTS_PER_FRAME = 300
+local MAX_TIME_PER_FRAME = 0.007
+
+-- Các tên thường dùng cho nền đất.
+local GroundKeywords = {
+    "ground",
+    "floor",
+    "baseplate",
+    "base",
+    "terrain",
+    "land",
+    "soil",
+    "grass",
+    "road",
+    "path",
+    "platform",
+    "plot",
+    "walkway"
+}
+
+-- Part lớn, mỏng và nằm thấp thường là mặt đất.
+local MIN_GROUND_SIZE_XZ = 30
+local MAX_GROUND_THICKNESS = 12
+
+-- =============================================================
+-- GIẢM ĐỒ HỌA / FPS
+-- =============================================================
+
+pcall(function()
+    if setfpscap then
+        setfpscap(FPS_CAP)
+    end
+end)
+
+pcall(function()
+    settings().Rendering.QualityLevel = Enum.QualityLevel.Level01
+end)
+
+pcall(function()
+    Lighting.GlobalShadows = false
+    Lighting.Brightness = 2
+    Lighting.FogStart = 0
+    Lighting.FogEnd = 100000
+    Lighting.ExposureCompensation = 0
+end)
+
+-- =============================================================
+-- XÓA HIỆU ỨNG ÁNH SÁNG
+-- =============================================================
+
+local function removeLightingEffect(object)
+    if object:IsA("Atmosphere")
+        or object:IsA("BloomEffect")
+        or object:IsA("BlurEffect")
+        or object:IsA("ColorCorrectionEffect")
+        or object:IsA("DepthOfFieldEffect")
+        or object:IsA("SunRaysEffect") then
+
+        pcall(function()
+            object:Destroy()
+        end)
+
+        return true
+    end
+
+    return false
+end
+
+for _, object in ipairs(Lighting:GetChildren()) do
+    removeLightingEffect(object)
+end
+
+Lighting.ChildAdded:Connect(function(object)
+    task.defer(removeLightingEffect, object)
+end)
+
+-- =============================================================
+-- TẮT ÂM THANH
+-- =============================================================
+
+pcall(function()
+    SoundService.Volume = 0
+end)
+
+SoundService:GetPropertyChangedSignal("Volume"):Connect(function()
+    if SoundService.Volume ~= 0 then
+        SoundService.Volume = 0
+    end
+end)
+
+-- =============================================================
+-- KIỂM TRA NHÂN VẬT / TOOL / CAMERA
+-- =============================================================
+
+local function getLocalCharacter()
+    return LocalPlayer.Character
+end
+
+local function isLocalCharacterObject(object)
+    local character = getLocalCharacter()
+
+    if not character then
+        return false
+    end
+
+    return object == character or object:IsDescendantOf(character)
+end
+
+local function isToolObject(object)
+    return object:IsA("Tool")
+        or object:FindFirstAncestorWhichIsA("Tool") ~= nil
+end
+
+local function isCameraObject(object)
+    local camera = Workspace.CurrentCamera
+
+    if not camera then
+        return false
+    end
+
+    return object == camera or object:IsDescendantOf(camera)
+end
+
+-- =============================================================
+-- NHẬN DIỆN MẶT ĐẤT
+-- =============================================================
+
+local function hasGroundName(object)
+    local name = string.lower(object.Name)
+
+    for _, keyword in ipairs(GroundKeywords) do
+        if string.find(name, keyword, 1, true) then
+            return true
+        end
+    end
+
+    return false
+end
+
+local function isGroundPart(object)
+    if not object:IsA("BasePart") then
+        return false
+    end
+
+    -- Giữ Part có tên giống nền đất.
+    if hasGroundName(object) then
+        return true
+    end
+
+    -- Giữ Part rất lớn và tương đối mỏng.
+    local size = object.Size
+
+    local largeSurface =
+        size.X >= MIN_GROUND_SIZE_XZ
+        and size.Z >= MIN_GROUND_SIZE_XZ
+        and size.Y <= MAX_GROUND_THICKNESS
+
+    if largeSurface then
+        return true
+    end
+
+    return false
+end
+
+local function isGroundObject(object)
+    if object == Workspace.Terrain then
+        return true
+    end
+
+    local terrain = Workspace:FindFirstChildOfClass("Terrain")
+
+    if terrain and object:IsDescendantOf(terrain) then
+        return true
+    end
+
+    if isGroundPart(object) then
+        return true
+    end
+
+    -- Nếu nằm trong Model/Folder có tên giống nền đất thì giữ lại.
+    local ancestor = object.Parent
+
+    for _ = 1, 5 do
+        if not ancestor or ancestor == Workspace then
+            break
+        end
+
+        if hasGroundName(ancestor) then
+            return true
+        end
+
+        ancestor = ancestor.Parent
+    end
+
+    return false
+end
+
+-- =============================================================
+-- ĐỐI TƯỢNG CẦN GIỮ
+-- =============================================================
+
+local function shouldKeep(object)
+    if not object then
+        return true
+    end
+
+    if isGroundObject(object) then
+        return true
+    end
+
+    if isLocalCharacterObject(object) then
+        return true
+    end
+
+    if isToolObject(object) then
+        return true
+    end
+
+    if isCameraObject(object) then
+        return true
+    end
+
+    return false
+end
+
+-- =============================================================
+-- PHÂN LOẠI MODEL
+-- =============================================================
+
+local function getCharacterOwner(model)
+    if not model or not model:IsA("Model") then
+        return nil
+    end
+
+    return Players:GetPlayerFromCharacter(model)
+end
+
+local function isNPCModel(model)
+    if not model or not model:IsA("Model") then
+        return false
+    end
+
+    if getCharacterOwner(model) then
+        return false
+    end
+
+    return model:FindFirstChildOfClass("Humanoid") ~= nil
+        or model:FindFirstChild("HumanoidRootPart") ~= nil
+end
+
+local function modelContainsGround(model)
+    if not model or not model:IsA("Model") then
+        return false
+    end
+
+    if hasGroundName(model) then
+        return true
+    end
+
+    for _, child in ipairs(model:GetDescendants()) do
+        if isGroundPart(child) then
+            return true
+        end
+    end
+
+    return false
+end
+
+local function shouldDestroyModel(model)
+    if not model or not model.Parent or shouldKeep(model) then
+        return false
+    end
+
+    -- Không xóa nguyên Model nếu bên trong có nền đất.
+    if modelContainsGround(model) then
+        return false
+    end
+
+    local owner = getCharacterOwner(model)
+
+    if owner then
+        return REMOVE_OTHER_PLAYERS and owner ~= LocalPlayer
+    end
+
+    if isNPCModel(model) then
+        return REMOVE_NPCS
+    end
+
+    return REMOVE_WORLD
+end
+
+-- =============================================================
+-- XÓA ĐỐI TƯỢNG
+-- =============================================================
+
+local ProcessedCache = setmetatable({}, {
+    __mode = "k"
+})
+
+local function destroyObject(object)
+    if not object
+        or not object.Parent
+        or ProcessedCache[object]
+        or shouldKeep(object) then
+        return
+    end
+
+    ProcessedCache[object] = true
+
+    if object:IsA("Model") then
+        if shouldDestroyModel(object) then
+            pcall(function()
+                object:Destroy()
+            end)
+        end
+
+        return
+    end
+
+    local ancestorModel = object:FindFirstAncestorWhichIsA("Model")
+
+    if ancestorModel and not shouldKeep(ancestorModel) then
+        if shouldDestroyModel(ancestorModel) then
+            pcall(function()
+                ancestorModel:Destroy()
+            end)
+
+            return
+        end
+    end
+
+    if not REMOVE_WORLD then
+        return
+    end
+
+    if isGroundObject(object) then
+        return
+    end
+
+    if object:IsA("BasePart")
+        or object:IsA("Decal")
+        or object:IsA("Texture")
+        or object:IsA("SurfaceAppearance")
+        or object:IsA("ParticleEmitter")
+        or object:IsA("Trail")
+        or object:IsA("Beam")
+        or object:IsA("Smoke")
+        or object:IsA("Fire")
+        or object:IsA("Sparkles")
+        or object:IsA("Highlight")
+        or object:IsA("Sound")
+        or object:IsA("Attachment")
+        or object:IsA("BillboardGui")
+        or object:IsA("SurfaceGui") then
+
+        pcall(function()
+            object:Destroy()
+        end)
+    end
+end
+
+-- =============================================================
+-- HÀNG ĐỢI XỬ LÝ
+-- =============================================================
+
+local Queue = {}
+local QueueHead = 1
+local QueueTail = 0
+
+local QueuedCache = setmetatable({}, {
+    __mode = "k"
+})
+
+local function enqueue(object)
+    if not object
+        or not object.Parent
+        or shouldKeep(object)
+        or QueuedCache[object]
+        or ProcessedCache[object] then
+        return
+    end
+
+    QueueTail += 1
+    Queue[QueueTail] = object
+    QueuedCache[object] = true
+end
+
+-- =============================================================
+-- XỬ LÝ ĐỐI TƯỢNG HIỆN CÓ
+-- =============================================================
+
+task.spawn(function()
+    local objects = Workspace:GetChildren()
+
+    for index = 1, #objects do
+        enqueue(objects[index])
+        objects[index] = nil
+    end
+
+    objects = nil
+
+    local descendants = Workspace:GetDescendants()
+
+    for index = 1, #descendants do
+        enqueue(descendants[index])
+        descendants[index] = nil
+    end
+
+    descendants = nil
+end)
+
+-- =============================================================
+-- XỬ LÝ ĐỐI TƯỢNG MỚI
+-- =============================================================
+
+Workspace.ChildAdded:Connect(function(object)
+    enqueue(object)
+end)
+
+Workspace.DescendantAdded:Connect(function(object)
+    enqueue(object)
+end)
+
+-- =============================================================
+-- WORKER
+-- =============================================================
+
+task.spawn(function()
+    while true do
+        RunService.Heartbeat:Wait()
+
+        local processed = 0
+        local frameStart = os.clock()
+
+        while QueueHead <= QueueTail
+            and processed < MAX_OBJECTS_PER_FRAME
+            and os.clock() - frameStart < MAX_TIME_PER_FRAME do
+
+            local object = Queue[QueueHead]
+
+            Queue[QueueHead] = nil
+            QueueHead += 1
+            processed += 1
+
+            if object then
+                QueuedCache[object] = nil
+
+                if object.Parent then
+                    destroyObject(object)
+                end
+            end
+        end
+
+        if QueueHead > QueueTail then
+            Queue = {}
+            QueueHead = 1
+            QueueTail = 0
+        end
+    end
+end)
+
+-- =============================================================
+-- XÓA NHÂN VẬT NGƯỜI CHƠI KHÁC KHI RESPAWN
+-- =============================================================
+
+local function registerPlayer(player)
+    if player == LocalPlayer then
+        return
+    end
+
+    player.CharacterAdded:Connect(function(character)
+        if REMOVE_OTHER_PLAYERS then
+            task.defer(function()
+                if character and character.Parent then
+                    pcall(function()
+                        character:Destroy()
+                    end)
+                end
+            end)
+        end
+    end)
+
+    if REMOVE_OTHER_PLAYERS and player.Character then
+        enqueue(player.Character)
+    end
+end
+
+for _, player in ipairs(Players:GetPlayers()) do
+    registerPlayer(player)
+end
+
+Players.PlayerAdded:Connect(registerPlayer)
+
+-- =============================================================
+-- GIỮ NHÂN VẬT LOCAL SAU KHI RESPAWN
+-- =============================================================
+
+LocalPlayer.CharacterAdded:Connect(function(character)
+    ProcessedCache[character] = nil
+    QueuedCache[character] = nil
+end)
