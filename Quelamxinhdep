@@ -1,22 +1,39 @@
 -- =============================================================
--- ULTRA AFK DESTROY MODE + KEEP GROUND
--- Xóa phía client:
---   + Công trình / cây cối / khu vườn
---   + NPC / mob
---   + Nhân vật người chơi khác
--- Giữ:
---   + Nhân vật của bạn
---   + Tool / item
---   + Camera
---   + UI
---   + Terrain và mặt đất
+-- Ultra AFK Optimizer V2 - Crops Edition
+-- Low CPU + Low RAM Spike + Total Mute + Force Bright
+-- Hide World + Hide Crops + Hide Notifications
 -- =============================================================
 
-local Players = game:GetService("Players")
-local Workspace = game:GetService("Workspace")
+-- =============================================================
+-- CHỐNG CHẠY SCRIPT NHIỀU LẦN
+-- =============================================================
+
+local Environment = _G
+
+if getgenv then
+    local success, executorEnvironment = pcall(getgenv)
+
+    if success and type(executorEnvironment) == "table" then
+        Environment = executorEnvironment
+    end
+end
+
+if Environment.__ULTRA_AFK_OPTIMIZER_V2_LOADED then
+    return
+end
+
+Environment.__ULTRA_AFK_OPTIMIZER_V2_LOADED = true
+
+-- =============================================================
+-- SERVICES
+-- =============================================================
+
 local Lighting = game:GetService("Lighting")
+local Workspace = game:GetService("Workspace")
+local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local SoundService = game:GetService("SoundService")
+local CollectionService = game:GetService("CollectionService")
 
 local LocalPlayer = Players.LocalPlayer
 
@@ -24,38 +41,119 @@ local LocalPlayer = Players.LocalPlayer
 -- CẤU HÌNH
 -- =============================================================
 
+-- Xóa vĩnh viễn hiệu ứng và texture không quan trọng.
+-- Để false an toàn hơn cho auto farm.
+local AGGRESSIVE_FREE = false
+
+-- Có thể làm lỗi auto farm dùng touch hoặc raycast.
+local DISABLE_WORLD_TOUCH = false
+local DISABLE_WORLD_QUERY = false
+
+-- Đổi Material toàn bộ map.
+local SIMPLIFY_MATERIAL = false
+
+-- Xóa TextureID của MeshPart.
+local REMOVE_MESH_TEXTURE = false
+
+-- Ẩn toàn bộ cây trồng trên map.
+local HIDE_ALL_CROPS = true
+
+-- Kiểm tra và ẩn lại cây nếu game làm cây hiện trở lại.
+local CROP_REHIDE_INTERVAL = 5
+
+-- Số đối tượng xử lý tối đa mỗi khung hình.
+local MAX_OBJECTS_PER_FRAME = 80
+
+-- Thời gian tối đa worker được phép dùng trong một frame.
+local MAX_TIME_PER_FRAME = 0.003
+
+-- Giới hạn hàng đợi để tránh tăng RAM đột ngột.
+local MAX_QUEUE_SIZE = 1200
+
+-- FPS thấp giúp giảm CPU và GPU.
 local FPS_CAP = 15
 
-local REMOVE_OTHER_PLAYERS = true
-local REMOVE_NPCS = true
-local REMOVE_WORLD = true
+-- =============================================================
+-- TỪ KHÓA NHẬN DIỆN CÂY TRỒNG
+-- =============================================================
 
-local MAX_OBJECTS_PER_FRAME = 300
-local MAX_TIME_PER_FRAME = 0.007
+local CropKeywords = {
+    "plant",
+    "plants",
+    "planted",
+    "planting",
+    "crop",
+    "crops",
+    "growable",
+    "growing",
+    "harvest",
+    "harvestable",
 
--- Các tên thường dùng cho nền đất.
-local GroundKeywords = {
-    "ground",
-    "floor",
-    "baseplate",
-    "base",
-    "terrain",
-    "land",
-    "soil",
-    "grass",
-    "road",
-    "path",
-    "platform",
-    "plot",
-    "walkway"
+    "carrot",
+    "strawberry",
+    "blueberry",
+    "tomato",
+    "corn",
+    "watermelon",
+    "pumpkin",
+    "apple",
+    "bamboo",
+    "coconut",
+    "cactus",
+    "dragonfruit",
+    "dragon_fruit",
+    "mango",
+    "grape",
+    "mushroom",
+    "pepper",
+    "cacao",
+    "bean",
+    "pear",
+    "peach",
+    "banana",
+    "pineapple",
+    "kiwi",
+    "avocado",
+    "durian",
+    "papaya",
+    "lemon",
+    "orange",
+    "cherry",
+    "raspberry",
+    "cranberry",
+    "eggplant",
+    "onion",
+    "potato",
+    "rice",
+    "wheat",
+    "sunflower",
+    "rose",
+    "tulip",
+    "daffodil"
 }
 
--- Part lớn, mỏng và nằm thấp thường là mặt đất.
-local MIN_GROUND_SIZE_XZ = 30
-local MAX_GROUND_THICKNESS = 12
+local CropTags = {
+    "Plant",
+    "Plants",
+    "Crop",
+    "Crops",
+    "Harvestable",
+    "Growable"
+}
+
+local CropAttributes = {
+    "IsPlant",
+    "IsCrop",
+    "PlantType",
+    "CropType",
+    "SeedType",
+    "GrowthStage",
+    "GrowTime",
+    "Harvestable"
+}
 
 -- =============================================================
--- GIẢM ĐỒ HỌA / FPS
+-- GIẢM ĐỒ HỌA
 -- =============================================================
 
 pcall(function()
@@ -65,7 +163,8 @@ pcall(function()
 end)
 
 pcall(function()
-    settings().Rendering.QualityLevel = Enum.QualityLevel.Level01
+    settings().Rendering.QualityLevel =
+        Enum.QualityLevel.Level01
 end)
 
 pcall(function()
@@ -74,447 +173,221 @@ pcall(function()
     Lighting.FogStart = 0
     Lighting.FogEnd = 100000
     Lighting.ExposureCompensation = 0
+    Lighting.EnvironmentDiffuseScale = 0
+    Lighting.EnvironmentSpecularScale = 0
 end)
 
 -- =============================================================
--- XÓA HIỆU ỨNG ÁNH SÁNG
+-- CACHE YẾU
 -- =============================================================
 
-local function removeLightingEffect(object)
-    if object:IsA("Atmosphere")
-        or object:IsA("BloomEffect")
-        or object:IsA("BlurEffect")
-        or object:IsA("ColorCorrectionEffect")
-        or object:IsA("DepthOfFieldEffect")
-        or object:IsA("SunRaysEffect") then
-
-        pcall(function()
-            object:Destroy()
-        end)
-
-        return true
-    end
-
-    return false
-end
-
-for _, object in ipairs(Lighting:GetChildren()) do
-    removeLightingEffect(object)
-end
-
-Lighting.ChildAdded:Connect(function(object)
-    task.defer(removeLightingEffect, object)
-end)
-
--- =============================================================
--- TẮT ÂM THANH
--- =============================================================
-
-pcall(function()
-    SoundService.Volume = 0
-end)
-
-SoundService:GetPropertyChangedSignal("Volume"):Connect(function()
-    if SoundService.Volume ~= 0 then
-        SoundService.Volume = 0
-    end
-end)
-
--- =============================================================
--- KIỂM TRA NHÂN VẬT / TOOL / CAMERA
--- =============================================================
-
-local function getLocalCharacter()
-    return LocalPlayer.Character
-end
-
-local function isLocalCharacterObject(object)
-    local character = getLocalCharacter()
-
-    if not character then
-        return false
-    end
-
-    return object == character or object:IsDescendantOf(character)
-end
-
-local function isToolObject(object)
-    return object:IsA("Tool")
-        or object:FindFirstAncestorWhichIsA("Tool") ~= nil
-end
-
-local function isCameraObject(object)
-    local camera = Workspace.CurrentCamera
-
-    if not camera then
-        return false
-    end
-
-    return object == camera or object:IsDescendantOf(camera)
-end
-
--- =============================================================
--- NHẬN DIỆN MẶT ĐẤT
--- =============================================================
-
-local function hasGroundName(object)
-    local name = string.lower(object.Name)
-
-    for _, keyword in ipairs(GroundKeywords) do
-        if string.find(name, keyword, 1, true) then
-            return true
-        end
-    end
-
-    return false
-end
-
-local function isGroundPart(object)
-    if not object:IsA("BasePart") then
-        return false
-    end
-
-    -- Giữ Part có tên giống nền đất.
-    if hasGroundName(object) then
-        return true
-    end
-
-    -- Giữ Part rất lớn và tương đối mỏng.
-    local size = object.Size
-
-    local largeSurface =
-        size.X >= MIN_GROUND_SIZE_XZ
-        and size.Z >= MIN_GROUND_SIZE_XZ
-        and size.Y <= MAX_GROUND_THICKNESS
-
-    if largeSurface then
-        return true
-    end
-
-    return false
-end
-
-local function isGroundObject(object)
-    if object == Workspace.Terrain then
-        return true
-    end
-
-    local terrain = Workspace:FindFirstChildOfClass("Terrain")
-
-    if terrain and object:IsDescendantOf(terrain) then
-        return true
-    end
-
-    if isGroundPart(object) then
-        return true
-    end
-
-    -- Nếu nằm trong Model/Folder có tên giống nền đất thì giữ lại.
-    local ancestor = object.Parent
-
-    for _ = 1, 5 do
-        if not ancestor or ancestor == Workspace then
-            break
-        end
-
-        if hasGroundName(ancestor) then
-            return true
-        end
-
-        ancestor = ancestor.Parent
-    end
-
-    return false
-end
-
--- =============================================================
--- ĐỐI TƯỢNG CẦN GIỮ
--- =============================================================
-
-local function shouldKeep(object)
-    if not object then
-        return true
-    end
-
-    if isGroundObject(object) then
-        return true
-    end
-
-    if isLocalCharacterObject(object) then
-        return true
-    end
-
-    if isToolObject(object) then
-        return true
-    end
-
-    if isCameraObject(object) then
-        return true
-    end
-
-    return false
-end
-
--- =============================================================
--- PHÂN LOẠI MODEL
--- =============================================================
-
-local function getCharacterOwner(model)
-    if not model or not model:IsA("Model") then
-        return nil
-    end
-
-    return Players:GetPlayerFromCharacter(model)
-end
-
-local function isNPCModel(model)
-    if not model or not model:IsA("Model") then
-        return false
-    end
-
-    if getCharacterOwner(model) then
-        return false
-    end
-
-    return model:FindFirstChildOfClass("Humanoid") ~= nil
-        or model:FindFirstChild("HumanoidRootPart") ~= nil
-end
-
-local function modelContainsGround(model)
-    if not model or not model:IsA("Model") then
-        return false
-    end
-
-    if hasGroundName(model) then
-        return true
-    end
-
-    for _, child in ipairs(model:GetDescendants()) do
-        if isGroundPart(child) then
-            return true
-        end
-    end
-
-    return false
-end
-
-local function shouldDestroyModel(model)
-    if not model or not model.Parent or shouldKeep(model) then
-        return false
-    end
-
-    -- Không xóa nguyên Model nếu bên trong có nền đất.
-    if modelContainsGround(model) then
-        return false
-    end
-
-    local owner = getCharacterOwner(model)
-
-    if owner then
-        return REMOVE_OTHER_PLAYERS and owner ~= LocalPlayer
-    end
-
-    if isNPCModel(model) then
-        return REMOVE_NPCS
-    end
-
-    return REMOVE_WORLD
-end
-
--- =============================================================
--- XÓA ĐỐI TƯỢNG
--- =============================================================
-
-local ProcessedCache = setmetatable({}, {
+local CharacterCache = setmetatable({}, {
     __mode = "k"
 })
 
-local function destroyObject(object)
-    if not object
-        or not object.Parent
-        or ProcessedCache[object]
-        or shouldKeep(object) then
-        return
-    end
+local ImportantModelCache = setmetatable({}, {
+    __mode = "k"
+})
 
-    ProcessedCache[object] = true
-
-    if object:IsA("Model") then
-        if shouldDestroyModel(object) then
-            pcall(function()
-                object:Destroy()
-            end)
-        end
-
-        return
-    end
-
-    local ancestorModel = object:FindFirstAncestorWhichIsA("Model")
-
-    if ancestorModel and not shouldKeep(ancestorModel) then
-        if shouldDestroyModel(ancestorModel) then
-            pcall(function()
-                ancestorModel:Destroy()
-            end)
-
-            return
-        end
-    end
-
-    if not REMOVE_WORLD then
-        return
-    end
-
-    if isGroundObject(object) then
-        return
-    end
-
-    if object:IsA("BasePart")
-        or object:IsA("Decal")
-        or object:IsA("Texture")
-        or object:IsA("SurfaceAppearance")
-        or object:IsA("ParticleEmitter")
-        or object:IsA("Trail")
-        or object:IsA("Beam")
-        or object:IsA("Smoke")
-        or object:IsA("Fire")
-        or object:IsA("Sparkles")
-        or object:IsA("Highlight")
-        or object:IsA("Sound")
-        or object:IsA("Attachment")
-        or object:IsA("BillboardGui")
-        or object:IsA("SurfaceGui") then
-
-        pcall(function()
-            object:Destroy()
-        end)
-    end
-end
-
--- =============================================================
--- HÀNG ĐỢI XỬ LÝ
--- =============================================================
-
-local Queue = {}
-local QueueHead = 1
-local QueueTail = 0
+local OptimizedCache = setmetatable({}, {
+    __mode = "k"
+})
 
 local QueuedCache = setmetatable({}, {
     __mode = "k"
 })
 
-local function enqueue(object)
-    if not object
-        or not object.Parent
-        or shouldKeep(object)
-        or QueuedCache[object]
-        or ProcessedCache[object] then
+local CropSignatureCache = setmetatable({}, {
+    __mode = "k"
+})
+
+local CropVisualCache = setmetatable({}, {
+    __mode = "k"
+})
+
+-- =============================================================
+-- NHẬN DIỆN CÂY TRỒNG
+-- =============================================================
+
+local function nameLooksLikeCrop(object)
+    if not object then
+        return false
+    end
+
+    local name = string.lower(object.Name)
+
+    local normalizedName = string.gsub(
+        name,
+        "[%s%-%.]",
+        "_"
+    )
+
+    for index = 1, #CropKeywords do
+        local keyword = CropKeywords[index]
+
+        if string.find(
+            normalizedName,
+            keyword,
+            1,
+            true
+        ) then
+            return true
+        end
+    end
+
+    return false
+end
+
+local function hasCropAttribute(object)
+    if not object then
+        return false
+    end
+
+    for index = 1, #CropAttributes do
+        local attributeName = CropAttributes[index]
+
+        local success, value = pcall(function()
+            return object:GetAttribute(attributeName)
+        end)
+
+        if success
+            and value ~= nil
+            and value ~= false then
+
+            return true
+        end
+    end
+
+    return false
+end
+
+local function hasCropTag(object)
+    if not object then
+        return false
+    end
+
+    for index = 1, #CropTags do
+        local tagName = CropTags[index]
+
+        local success, tagged = pcall(function()
+            return CollectionService:HasTag(
+                object,
+                tagName
+            )
+        end)
+
+        if success and tagged then
+            return true
+        end
+    end
+
+    return false
+end
+
+local function hasCropSignature(object)
+    if not object then
+        return false
+    end
+
+    if CropSignatureCache[object] then
+        return true
+    end
+
+    if nameLooksLikeCrop(object)
+        or hasCropAttribute(object)
+        or hasCropTag(object) then
+
+        CropSignatureCache[object] = true
+        return true
+    end
+
+    return false
+end
+
+local function isCropRelated(object)
+    if not HIDE_ALL_CROPS or not object then
+        return false
+    end
+
+    if CropSignatureCache[object] then
+        return true
+    end
+
+    local current = object
+
+    while current and current ~= Workspace do
+        if hasCropSignature(current) then
+            CropSignatureCache[object] = true
+            return true
+        end
+
+        current = current.Parent
+    end
+
+    return false
+end
+
+local function hideCropVisual(object)
+    if not object or not object.Parent then
         return
     end
 
-    QueueTail += 1
-    Queue[QueueTail] = object
-    QueuedCache[object] = true
+    CropVisualCache[object] = true
+
+    if object:IsA("BasePart") then
+        pcall(function()
+            object.LocalTransparencyModifier = 1
+            object.CastShadow = false
+            object.Reflectance = 0
+        end)
+
+    elseif object:IsA("Decal")
+        or object:IsA("Texture") then
+
+        pcall(function()
+            object.Transparency = 1
+        end)
+
+    elseif object:IsA("ParticleEmitter")
+        or object:IsA("Trail")
+        or object:IsA("Beam")
+        or object:IsA("Smoke")
+        or object:IsA("Fire")
+        or object:IsA("Sparkles")
+        or object:IsA("Highlight") then
+
+        pcall(function()
+            object.Enabled = false
+        end)
+
+    elseif object:IsA("BillboardGui")
+        or object:IsA("SurfaceGui") then
+
+        pcall(function()
+            object.Enabled = false
+        end)
+    end
 end
 
 -- =============================================================
--- XỬ LÝ ĐỐI TƯỢNG HIỆN CÓ
+-- ĐĂNG KÝ NHÂN VẬT
 -- =============================================================
 
-task.spawn(function()
-    local objects = Workspace:GetChildren()
-
-    for index = 1, #objects do
-        enqueue(objects[index])
-        objects[index] = nil
-    end
-
-    objects = nil
-
-    local descendants = Workspace:GetDescendants()
-
-    for index = 1, #descendants do
-        enqueue(descendants[index])
-        descendants[index] = nil
-    end
-
-    descendants = nil
-end)
-
--- =============================================================
--- XỬ LÝ ĐỐI TƯỢNG MỚI
--- =============================================================
-
-Workspace.ChildAdded:Connect(function(object)
-    enqueue(object)
-end)
-
-Workspace.DescendantAdded:Connect(function(object)
-    enqueue(object)
-end)
-
--- =============================================================
--- WORKER
--- =============================================================
-
-task.spawn(function()
-    while true do
-        RunService.Heartbeat:Wait()
-
-        local processed = 0
-        local frameStart = os.clock()
-
-        while QueueHead <= QueueTail
-            and processed < MAX_OBJECTS_PER_FRAME
-            and os.clock() - frameStart < MAX_TIME_PER_FRAME do
-
-            local object = Queue[QueueHead]
-
-            Queue[QueueHead] = nil
-            QueueHead += 1
-            processed += 1
-
-            if object then
-                QueuedCache[object] = nil
-
-                if object.Parent then
-                    destroyObject(object)
-                end
-            end
-        end
-
-        if QueueHead > QueueTail then
-            Queue = {}
-            QueueHead = 1
-            QueueTail = 0
-        end
-    end
-end)
-
--- =============================================================
--- XÓA NHÂN VẬT NGƯỜI CHƠI KHÁC KHI RESPAWN
--- =============================================================
-
-local function registerPlayer(player)
-    if player == LocalPlayer then
+local function registerCharacter(character)
+    if not character then
         return
     end
 
-    player.CharacterAdded:Connect(function(character)
-        if REMOVE_OTHER_PLAYERS then
-            task.defer(function()
-                if character and character.Parent then
-                    pcall(function()
-                        character:Destroy()
-                    end)
-                end
-            end)
-        end
-    end)
+    CharacterCache[character] = true
+    ImportantModelCache[character] = true
+end
 
-    if REMOVE_OTHER_PLAYERS and player.Character then
-        enqueue(player.Character)
+local function registerPlayer(player)
+    if player.Character then
+        registerCharacter(player.Character)
     end
+
+    player.CharacterAdded:Connect(registerCharacter)
 end
 
 for _, player in ipairs(Players:GetPlayers()) do
@@ -524,10 +397,503 @@ end
 Players.PlayerAdded:Connect(registerPlayer)
 
 -- =============================================================
--- GIỮ NHÂN VẬT LOCAL SAU KHI RESPAWN
+-- KIỂM TRA MODEL QUAN TRỌNG
 -- =============================================================
 
-LocalPlayer.CharacterAdded:Connect(function(character)
-    ProcessedCache[character] = nil
-    QueuedCache[character] = nil
+local function isImportantModel(model)
+    if not model then
+        return false
+    end
+
+    local cached = ImportantModelCache[model]
+
+    if cached ~= nil then
+        return cached
+    end
+
+    local important = false
+
+    if CharacterCache[model] then
+        important = true
+
+    elseif model:FindFirstChildOfClass("Humanoid") then
+        important = true
+    end
+
+    ImportantModelCache[model] = important
+
+    return important
+end
+
+local function isImportant(object)
+    if not object then
+        return false
+    end
+
+    if object:IsA("Tool")
+        or object:FindFirstAncestorWhichIsA("Tool") then
+
+        return true
+    end
+
+    local model =
+        object:FindFirstAncestorWhichIsA("Model")
+
+    if model and isImportantModel(model) then
+        return true
+    end
+
+    local camera = Workspace.CurrentCamera
+
+    if camera then
+        if object == camera then
+            return true
+        end
+
+        local success, insideCamera = pcall(function()
+            return object:IsDescendantOf(camera)
+        end)
+
+        if success and insideCamera then
+            return true
+        end
+    end
+
+    return false
+end
+
+-- =============================================================
+-- KIỂM TRA LOẠI INSTANCE
+-- =============================================================
+
+local function shouldProcess(object)
+    if not object then
+        return false
+    end
+
+    local className = object.ClassName
+
+    return object:IsA("BasePart")
+        or className == "ParticleEmitter"
+        or className == "Trail"
+        or className == "Beam"
+        or className == "Smoke"
+        or className == "Fire"
+        or className == "Sparkles"
+        or className == "Highlight"
+        or className == "Decal"
+        or className == "Texture"
+        or className == "SurfaceAppearance"
+        or className == "BillboardGui"
+        or className == "SurfaceGui"
+        or className == "Sound"
+end
+
+local function isEffect(object)
+    if not object then
+        return false
+    end
+
+    local className = object.ClassName
+
+    return className == "ParticleEmitter"
+        or className == "Trail"
+        or className == "Beam"
+        or className == "Smoke"
+        or className == "Fire"
+        or className == "Sparkles"
+        or className == "Highlight"
+end
+
+-- =============================================================
+-- TẮT HIỆU ỨNG ÁNH SÁNG
+-- =============================================================
+
+local function removeLightingEffect(effect)
+    if not effect then
+        return
+    end
+
+    if effect:IsA("ColorCorrectionEffect")
+        or effect:IsA("Atmosphere")
+        or effect:IsA("BlurEffect")
+        or effect:IsA("SunRaysEffect")
+        or effect:IsA("BloomEffect")
+        or effect:IsA("DepthOfFieldEffect") then
+
+        pcall(function()
+            effect.Enabled = false
+        end)
+
+        pcall(function()
+            effect:Destroy()
+        end)
+    end
+end
+
+for _, effect in ipairs(Lighting:GetChildren()) do
+    removeLightingEffect(effect)
+end
+
+Lighting.ChildAdded:Connect(function(effect)
+    task.defer(removeLightingEffect, effect)
 end)
+
+-- =============================================================
+-- TẮT ÂM THANH
+-- =============================================================
+
+local function muteSound(sound)
+    if not sound or not sound.Parent then
+        return
+    end
+
+    pcall(function()
+        sound:Stop()
+        sound.Volume = 0
+        sound.Playing = false
+    end)
+end
+
+local function muteSoundGroup(soundGroup)
+    if not soundGroup or not soundGroup.Parent then
+        return
+    end
+
+    pcall(function()
+        soundGroup.Volume = 0
+    end)
+end
+
+local function muteAudioObject(object)
+    if not object then
+        return
+    end
+
+    if object:IsA("Sound") then
+        muteSound(object)
+
+    elseif object:IsA("SoundGroup") then
+        muteSoundGroup(object)
+    end
+end
+
+pcall(function()
+    SoundService.RespectFilteringEnabled = true
+end)
+
+for _, object in ipairs(
+    SoundService:GetDescendants()
+) do
+    muteAudioObject(object)
+end
+
+SoundService.DescendantAdded:Connect(function(object)
+    task.defer(muteAudioObject, object)
+end)
+
+-- =============================================================
+-- TỐI ƯU INSTANCE
+-- =============================================================
+
+local function optimizeObject(object)
+    if not object
+        or not object.Parent
+        or OptimizedCache[object] then
+
+        return
+    end
+
+    OptimizedCache[object] = true
+
+    if object:IsA("Sound") then
+        muteSound(object)
+        return
+    end
+
+    local important = isImportant(object)
+
+    -- Ẩn cây trồng riêng.
+    -- Không xóa và không thay đổi hitbox.
+    if not important
+        and HIDE_ALL_CROPS
+        and isCropRelated(object) then
+
+        hideCropVisual(object)
+        return
+    end
+
+    -- Không ẩn BillboardGui hoặc SurfaceGui
+    -- không thuộc cây trồng.
+    if object:IsA("BillboardGui")
+        or object:IsA("SurfaceGui") then
+
+        return
+    end
+
+    if isEffect(object) then
+        if not important then
+            if AGGRESSIVE_FREE then
+                pcall(function()
+                    object:Destroy()
+                end)
+            else
+                pcall(function()
+                    object.Enabled = false
+                end)
+            end
+        end
+
+        return
+    end
+
+    if object:IsA("Decal")
+        or object:IsA("Texture") then
+
+        if not important then
+            if AGGRESSIVE_FREE then
+                pcall(function()
+                    object:Destroy()
+                end)
+            else
+                pcall(function()
+                    object.Transparency = 1
+                end)
+            end
+        end
+
+        return
+    end
+
+    if object:IsA("SurfaceAppearance") then
+        if not important and AGGRESSIVE_FREE then
+            pcall(function()
+                object:Destroy()
+            end)
+        end
+
+        return
+    end
+
+    if object:IsA("BasePart") then
+        pcall(function()
+            object.CastShadow = false
+        end)
+
+        if important then
+            return
+        end
+
+        pcall(function()
+            object.LocalTransparencyModifier = 1
+            object.CastShadow = false
+            object.Reflectance = 0
+
+            if SIMPLIFY_MATERIAL then
+                object.Material =
+                    Enum.Material.Plastic
+            end
+
+            if DISABLE_WORLD_TOUCH then
+                object.CanTouch = false
+            end
+
+            if DISABLE_WORLD_QUERY then
+                object.CanQuery = false
+            end
+        end)
+
+        if object:IsA("MeshPart")
+            and REMOVE_MESH_TEXTURE then
+
+            pcall(function()
+                object.TextureID = ""
+            end)
+        end
+    end
+end
+
+-- =============================================================
+-- HÀNG ĐỢI XỬ LÝ
+-- =============================================================
+
+local ProcessQueue = {}
+
+local QueueHead = 1
+local QueueTail = 0
+
+local function getQueueSize()
+    if QueueTail < QueueHead then
+        return 0
+    end
+
+    return QueueTail - QueueHead + 1
+end
+
+local function enqueue(object)
+    if not object or not object.Parent then
+        return false
+    end
+
+    if OptimizedCache[object]
+        or QueuedCache[object] then
+
+        return false
+    end
+
+    if not shouldProcess(object) then
+        return false
+    end
+
+    QueueTail += 1
+
+    ProcessQueue[QueueTail] = object
+    QueuedCache[object] = true
+
+    return true
+end
+
+-- =============================================================
+-- XỬ LÝ ĐỐI TƯỢNG MỚI
+-- =============================================================
+
+Workspace.DescendantAdded:Connect(function(object)
+    enqueue(object)
+
+    if object:IsA("Sound") then
+        task.defer(muteSound, object)
+    end
+
+    if object:IsA("Humanoid") then
+        local model = object.Parent
+
+        if model and model:IsA("Model") then
+            ImportantModelCache[model] = true
+        end
+    end
+end)
+
+-- =============================================================
+-- QUÉT WORKSPACE KHÔNG DÙNG GetDescendants()
+-- =============================================================
+
+task.spawn(function()
+    local ScanQueue = {
+        Workspace
+    }
+
+    local scanHead = 1
+    local scannedParents = 0
+
+    while scanHead <= #ScanQueue do
+        local parent = ScanQueue[scanHead]
+
+        ScanQueue[scanHead] = nil
+        scanHead += 1
+        scannedParents += 1
+
+        if parent and parent.Parent then
+            local children = nil
+
+            local success = pcall(function()
+                children = parent:GetChildren()
+            end)
+
+            if success and children then
+                for index = 1, #children do
+                    local child = children[index]
+
+                    if child and child.Parent then
+                        if shouldProcess(child) then
+                            while getQueueSize()
+                                >= MAX_QUEUE_SIZE do
+
+                                RunService.Heartbeat:Wait()
+                            end
+
+                            enqueue(child)
+                        end
+
+                        local shouldScanChildren = false
+
+                        if child:IsA("Model")
+                            or child:IsA("Folder")
+                            or child:IsA("WorldModel")
+                            or child:IsA("Camera") then
+
+                            shouldScanChildren = true
+                        else
+                            pcall(function()
+                                shouldScanChildren =
+                                    #child:GetChildren() > 0
+                            end)
+                        end
+
+                        if shouldScanChildren then
+                            ScanQueue[
+                                #ScanQueue + 1
+                            ] = child
+                        end
+                    end
+                end
+            end
+        end
+
+        if scannedParents % 40 == 0 then
+            RunService.Heartbeat:Wait()
+        end
+    end
+
+    table.clear(ScanQueue)
+end)
+
+-- =============================================================
+-- WORKER XỬ LÝ THEO FRAME
+-- =============================================================
+
+task.spawn(function()
+    while true do
+        RunService.Heartbeat:Wait()
+
+        local processed = 0
+        local frameStart = os.clock()
+
+        while QueueHead <= QueueTail do
+            if processed >= MAX_OBJECTS_PER_FRAME then
+                break
+            end
+
+            if os.clock() - frameStart
+                >= MAX_TIME_PER_FRAME then
+
+                break
+            end
+
+            local object =
+                ProcessQueue[QueueHead]
+
+            ProcessQueue[QueueHead] = nil
+            QueueHead += 1
+            processed += 1
+
+            if object then
+                QueuedCache[object] = nil
+
+                if object.Parent then
+                    optimizeObject(object)
+                end
+            end
+        end
+
+        if QueueHead > QueueTail then
+            table.clear(ProcessQueue)
+
+            QueueHead = 1
+            QueueTail = 0
+        end
+    end
+end)
+
+-- =============================================================
+-- DUY TRÌ TRẠNG THÁI ẨN CÂY
+-- ====================
