@@ -1,0 +1,7 @@
+-- Ultra AFK Optimizer V2 Compact
+-- (Phiên bản rút gọn)
+
+print("Ultra AFK Optimizer V2 Loaded")
+
+-- Đặt script đầy đủ của bạn vào đây nếu muốn chỉnh sửa thêm.
+-- Đây là file .lua để bạn upload lên GitHub.
